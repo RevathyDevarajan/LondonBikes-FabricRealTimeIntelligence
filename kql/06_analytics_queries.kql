@@ -1,0 +1,127 @@
+// =============================================================
+// 06_analytics_queries.kql
+// London Bikes RTI — Analytics Queryset (LondonBikes_Analytics)
+//
+// Ad-hoc and exploratory queries written against the Silver
+// table and Gold Materialized Views. Run these in the
+// LondonBikes_EH KQL Queryset.
+//
+// Q1–Q5   : operational spot-checks and network health
+// Q6–Q7   : trend and pattern analysis
+// Q8–Q10  : advanced — volatility, data quality, geospatial
+// =============================================================
+
+
+// -------------------------------------------------------------
+// Q1 — Quick row count check (Bronze vs Silver)
+// Are we losing rows anywhere in the pipeline?
+// -------------------------------------------------------------
+Bikes_Bronze
+| count
+
+Bikes_Silver
+| count
+
+
+// -------------------------------------------------------------
+// Q2 — Latest reading for a specific station
+// Useful for debugging a station that's showing unexpected status.
+// -------------------------------------------------------------
+Bikes_Silver
+| where BikepointID == "BikePoints_460"
+| order by Timestamp desc
+| take 5
+
+
+// -------------------------------------------------------------
+// Q3 — Current network health snapshot
+// How many stations are in each status right now?
+// -------------------------------------------------------------
+mv_StationSummary
+| summarize Count = count() by StationStatus
+| order by Count desc
+
+
+// -------------------------------------------------------------
+// Q4 — Empty stations right now, sorted by neighbourhood
+// First thing to look at when the Activator fires.
+// -------------------------------------------------------------
+mv_StationSummary
+| where StationStatus == "Empty"
+| project BikepointID, Street, Neighbourhood, No_Bikes, AvailabilityPct, Timestamp
+| order by Neighbourhood asc
+
+
+// -------------------------------------------------------------
+// Q5 — Neighbourhood availability summary (current)
+// Which neighbourhoods are healthy and which need attention?
+// -------------------------------------------------------------
+mv_NeighbourhoodRollup
+| project Neighbourhood, TotalStations, TotalBikes, EmptyStations,
+          LowStations, AvgAvailabilityPct
+| order by AvgAvailabilityPct asc
+
+
+// -------------------------------------------------------------
+// Q6 — Activator simulation: neighbourhoods below 30% threshold
+// Same query the Activator runs every 5 minutes.
+// Run manually to see what would currently trigger an alert.
+// -------------------------------------------------------------
+mv_NeighbourhoodRollup
+| where AvgAvailabilityPct < 30
+| project Neighbourhood, AvgAvailabilityPct, EmptyStations
+| order by AvgAvailabilityPct asc
+
+
+// -------------------------------------------------------------
+// Q7 — Peak hour analysis
+// At which hours of the day is average availability lowest?
+// Useful for planning proactive rebalancing schedules.
+// -------------------------------------------------------------
+Bikes_Silver
+| extend HourOfDay = hourofday(Timestamp)
+| summarize AvgAvail = round(avg(AvailabilityPct), 1) by HourOfDay
+| order by HourOfDay asc
+
+
+// -------------------------------------------------------------
+// Q8 — Stations that flip between statuses most (volatility)
+// Stations with high StatusChanges in 6h are either poorly
+// served or have structural issues worth investigating.
+// -------------------------------------------------------------
+Bikes_Silver
+| where Timestamp > ago(6h)
+| summarize
+    StatusChanges = dcount(StationStatus),
+    MinBikes      = min(No_Bikes),
+    MaxBikes      = max(No_Bikes)
+  by BikepointID, Street
+| where StatusChanges > 1
+| order by StatusChanges desc
+
+
+// -------------------------------------------------------------
+// Q9 — Data latency check: ingestion lag (quality check)
+// Compares IngestionTime to event Timestamp to measure how
+// fresh the pipeline is. Flag anything taking too long.
+// -------------------------------------------------------------
+Bikes_Silver
+| where IngestionTime > ago(10m)
+| extend LatencySeconds = datetime_diff('second', IngestionTime, Timestamp)
+| summarize
+    AvgLatencySeconds = avg(LatencySeconds),
+    MaxLatencySeconds = max(LatencySeconds)
+
+
+// -------------------------------------------------------------
+// Q10 — Geospatial: stations below 20% availability
+// Returns coordinates for mapping in external tools or
+// the Critical Stations Map tile on the dashboard.
+// (17 records as of 2026-04-21 14:05 UTC)
+// -------------------------------------------------------------
+mv_StationSummary
+| where AvailabilityPct < 20
+| project BikepointID, Street, Neighbourhood,
+          Latitude, Longitude, No_Bikes,
+          AvailabilityPct, StationStatus
+| order by AvailabilityPct asc

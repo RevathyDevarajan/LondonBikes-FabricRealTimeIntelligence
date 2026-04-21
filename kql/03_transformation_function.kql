@@ -1,0 +1,71 @@
+// =============================================================
+// 03_transformation_function.kql
+// London Bikes RTI — Bronze → Silver Transformation Function
+//
+// This function is the heart of the Medallion Architecture.
+// It is called automatically by the Update Policy on
+// Bikes_Bronze whenever new rows land from EventStream.
+//
+// What it does:
+//   1. Computes TotalDocks and AvailabilityPct
+//   2. Classifies each station into a StationStatus category
+//   3. Cleans null/empty Neighbourhood values
+//   4. Captures ingestion time for latency monitoring
+//   5. Projects only the columns Bikes_Silver expects
+// =============================================================
+
+.create-or-alter function with (skipvalidation = "true") TransformBronzeToSilver() {
+    Bikes_Bronze
+    | extend
+        // Total capacity = bikes available + empty spaces
+        TotalDocks        = No_Bikes + No_Empty_Docks,
+
+        // Availability as a percentage, rounded to 1 decimal.
+        // Guard against divide-by-zero on stations with 0 total docks.
+        AvailabilityPct   = iff(
+            (No_Bikes + No_Empty_Docks) > 0,
+            round(toreal(No_Bikes) / (No_Bikes + No_Empty_Docks) * 100, 1),
+            real(0)
+        ),
+
+        // Five-category status classification.
+        // Order matters — conditions are evaluated top to bottom.
+        StationStatus     = case(
+            No_Bikes == 0,          'Empty',       // no bikes at all
+            No_Empty_Docks == 0,    'Full',        // no space to dock
+            No_Bikes <= 3,          'Low',         // nearly out of bikes
+            No_Empty_Docks <= 3,    'NearlyFull',  // nearly no room to return
+                                    'Normal'       // healthy state
+        ),
+
+        // Null-safe Neighbourhood — prevents broken group-bys downstream
+        Neighbourhood     = iff(
+            isempty(Neighbourhood) or isnull(Neighbourhood),
+            'Unidentified',
+            Neighbourhood
+        ),
+
+        // Capture when Eventhouse processed this row (for latency checks)
+        IngestionTime     = ingestion_time()
+
+    // Project in the exact column order that Bikes_Silver expects
+    | project
+        BikepointID,
+        Street,
+        Neighbourhood,
+        Latitude,
+        Longitude,
+        No_Bikes,
+        No_Empty_Docks,
+        TotalDocks,
+        AvailabilityPct,
+        StationStatus,
+        Timestamp,
+        IngestionTime
+}
+
+// -- Quick sanity check: run the function manually against Bronze --
+// (useful after deploying to confirm the output schema looks right)
+//
+// TransformBronzeToSilver()
+// | take 10

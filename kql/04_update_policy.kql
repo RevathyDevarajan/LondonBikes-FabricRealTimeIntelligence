@@ -1,0 +1,42 @@
+// =============================================================
+// 04_update_policy.kql
+// London Bikes RTI — Update Policy (Bronze → Silver)
+//
+// Attaches TransformBronzeToSilver() to Bikes_Bronze so that
+// every row inserted into Bronze is automatically transformed
+// and written into Bikes_Silver — no manual intervention needed.
+//
+// Prerequisites (run in order before this file):
+//   01_bronze_table.kql     — Bikes_Bronze must exist
+//   02_silver_table.kql     — Bikes_Silver must exist
+//   03_transformation_function.kql — function must exist
+//
+// Once applied, the pipeline is:
+//   EventStream → Bikes_Bronze → [Update Policy] → Bikes_Silver
+// =============================================================
+
+// -- Apply the Update Policy to Bikes_Bronze --
+.alter table Bikes_Bronze policy update
+```
+[
+    {
+        "IsEnabled"           : true,
+        "Source"              : "Bikes_Bronze",
+        "Query"               : "TransformBronzeToSilver()",
+        "IsTransactional"     : false,
+        "PropagateIngestionProperties": true
+    }
+]
+```
+
+// -- Verify the policy is in place --
+.show table Bikes_Bronze policy update
+
+// -- Notes --
+// IsTransactional = false means if the Silver write fails,
+// the Bronze row is still kept. This is intentional — Bronze
+// is the source of truth and we can replay if needed.
+//
+// PropagateIngestionProperties = true carries the original
+// EventStream ingestion tags through to Silver, which helps
+// with lineage tracking.

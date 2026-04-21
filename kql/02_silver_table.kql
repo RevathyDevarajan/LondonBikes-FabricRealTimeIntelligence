@@ -1,0 +1,48 @@
+// =============================================================
+// 02_silver_table.kql
+// London Bikes RTI — Silver Layer
+//
+// Enriched table populated automatically by the Update Policy
+// on Bikes_Bronze (see 04_update_policy.kql).
+//
+// Never write to this table directly. All rows come through
+// the TransformBronzeToSilver() function defined in
+// 03_transformation_function.kql.
+//
+// Run this once when setting up the Eventhouse database,
+// BEFORE creating the Update Policy.
+// =============================================================
+
+// -- Create the Silver table --
+// Schema extends Bronze with 4 computed columns:
+//   TotalDocks       — total station capacity
+//   AvailabilityPct  — % of docks that have a bike (0–100)
+//   StationStatus    — categorical label (Empty/Low/NearlyFull/Normal/Full)
+//   IngestionTime    — when this row was processed by Eventhouse
+.create table Bikes_Silver (
+    BikepointID     : string,
+    Street          : string,
+    Neighbourhood   : string,
+    Latitude        : real,
+    Longitude       : real,
+    No_Bikes        : int,
+    No_Empty_Docks  : int,
+    TotalDocks      : int,
+    AvailabilityPct : real,
+    StationStatus   : string,
+    Timestamp       : datetime,
+    IngestionTime   : datetime
+)
+
+// -- Set ingestion batching policy for low-latency writes --
+.alter table Bikes_Silver policy ingestionbatching
+```
+{
+    "MaximumBatchingTimeSpan": "00:00:10",
+    "MaximumNumberOfItems": 500,
+    "MaximumRawDataSizeMB": 100
+}
+```
+
+// -- Verify table was created --
+.show table Bikes_Silver schema

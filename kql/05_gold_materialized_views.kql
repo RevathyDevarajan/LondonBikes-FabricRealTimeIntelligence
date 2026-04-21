@@ -1,0 +1,70 @@
+// =============================================================
+// 05_gold_materialized_views.kql
+// London Bikes RTI — Gold Layer (Materialized Views)
+//
+// Three Materialized Views that continuously pre-aggregate
+// Bikes_Silver. The dashboard, Activator, and analytics
+// queries all read from these — never scanning Silver raw.
+//
+// Views are maintained incrementally by Eventhouse as new
+// Silver rows arrive, so query cost is near-zero at read time.
+//
+// Run after 01–04 are in place and Silver has data.
+// =============================================================
+
+
+// -------------------------------------------------------------
+// mv_StationSummary — latest snapshot per station
+// -------------------------------------------------------------
+// Returns the single most-recent row for each BikepointID.
+// Used by: geospatial map on the dashboard, per-station lookups,
+//          and the Q10 low-availability geo query.
+.create materialized-view with (backfill=true) mv_StationSummary on table Bikes_Silver
+{
+    Bikes_Silver
+    | summarize arg_max(Timestamp, *) by BikepointID
+}
+
+
+// -------------------------------------------------------------
+// mv_NeighbourhoodRollup — neighbourhood-level aggregation
+// -------------------------------------------------------------
+// Aggregates Silver by Neighbourhood, counting stations in each
+// status category and computing average availability.
+// Used by: Activator alert rule, Availability by Neighbourhood
+//          bar chart, and most neighbourhood-level queries.
+.create materialized-view with (backfill=true) mv_NeighbourhoodRollup on table Bikes_Silver
+{
+    Bikes_Silver
+    | summarize
+        TotalStations      = count(),
+        TotalBikes         = sum(No_Bikes),
+        TotalEmptyDocks    = sum(No_Empty_Docks),
+        EmptyStations      = countif(StationStatus == 'Empty'),
+        LowStations        = countif(StationStatus == 'Low'),
+        FullStations       = countif(StationStatus == 'Full'),
+        AvgAvailabilityPct = avg(AvailabilityPct)
+      by Neighbourhood
+}
+
+
+// -------------------------------------------------------------
+// mv_HourlyTrend — hourly binned averages by neighbourhood
+// -------------------------------------------------------------
+// Bins Silver into 1-hour buckets per neighbourhood, tracking
+// average bike count, average availability, and empty station
+// count over time.
+// Used by: Hourly Availability Trend line chart on the dashboard.
+.create materialized-view with (backfill=true) mv_HourlyTrend on table Bikes_Silver
+{
+    Bikes_Silver
+    | summarize
+        AvgBikes     = avg(No_Bikes),
+        AvgAvailPct  = avg(AvailabilityPct),
+        EmptyCount   = countif(StationStatus == 'Empty')
+      by Neighbourhood, bin(Timestamp, 1h)
+}
+
+
+// -- Verify all three views exist and are healthy --
+.show materialized-views

@@ -1,0 +1,36 @@
+// =============================================================
+// 01_bronze_table.kql
+// London Bikes RTI — Bronze Layer
+//
+// Raw landing table. Data arrives directly from EventStream
+// (LondonBikes_Stream) with no transformation. Schema mirrors
+// the ManageFields operator output — exactly the columns we
+// care about, nothing extra.
+//
+// Run this once when setting up the Eventhouse database.
+// =============================================================
+
+// -- Create the Bronze table --
+.create table Bikes_Bronze (
+    BikepointID    : string,      // e.g. "BikePoints_460"
+    Street         : string,      // street address of the docking station
+    Neighbourhood  : string,      // area grouping e.g. "Fitzrovia", "Chelsea"
+    Latitude       : real,        // WGS84 latitude
+    Longitude      : real,        // WGS84 longitude
+    No_Bikes       : int,         // bikes currently available
+    No_Empty_Docks : int,         // empty docking spaces available
+    Timestamp      : datetime     // event timestamp from the source feed
+)
+
+// -- Set retention (optional, adjust to taste) --
+// Keeps 30 days of raw Bronze data.
+.alter table Bikes_Bronze policy retention
+```
+{
+    "SoftDeletePeriod": "30.00:00:00",
+    "Recoverability": "Enabled"
+}
+```
+
+// -- Verify table was created --
+.show table Bikes_Bronze schema
