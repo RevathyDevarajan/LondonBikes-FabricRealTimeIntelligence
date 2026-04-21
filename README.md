@@ -1,123 +1,171 @@
-# London Bikes — Real-Time Intelligence on Microsoft Fabric
+# London Bikes RTI - Microsoft Fabric Real-Time Intelligence
 
 ![Microsoft Fabric](https://img.shields.io/badge/Microsoft%20Fabric-RTI-0078D4?style=flat-square&logo=microsoft&logoColor=white)
-![KQL](https://img.shields.io/badge/KQL-Kusto-00B4D8?style=flat-square)
-![EventStream](https://img.shields.io/badge/EventStream-Live-7B2D8B?style=flat-square)
-![Activator](https://img.shields.io/badge/Activator-Alerts-E8820C?style=flat-square)
+![KQL](https://img.shields.io/badge/KQL-Kusto%20Query%20Language-00B4D8?style=flat-square)
+![EventStream](https://img.shields.io/badge/Fabric-EventStream-7B2D8B?style=flat-square)
+![Eventhouse](https://img.shields.io/badge/Fabric-Eventhouse-217346?style=flat-square)
+![Activator](https://img.shields.io/badge/Fabric-Activator-E8820C?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Live-brightgreen?style=flat-square)
 
----
+## Overview
 
-## Why I built this
+This project builds a real-time data pipeline on **Microsoft Fabric** to monitor TfL Santander Cycle docking stations across London. Live station telemetry is ingested through EventStream, transformed inside an Eventhouse using a Medallion Architecture (Bronze / Silver / Gold), and surfaced via an operational dashboard and automated neighbourhood-level alerts. The goal is to support proactive bike rebalancing decisions before stations run empty.
 
-Anyone who's used the Santander Cycles in London knows the frustration — you walk up to a docking station and it's either completely empty or completely rammed with no free docks. TfL has hundreds of stations across the city and rebalancing them (physically moving bikes between stations via vans) is genuinely hard to do well without real-time data.
+## Business Problem
 
-The question I wanted to answer was: **can I build something that tells an operations team, right now, which neighbourhoods are running critically low — not five minutes ago, not from a batch report, but live?**
+TfL operates over 750 Santander Cycle docking stations across London. A persistent operational challenge is **station rebalancing** - redistributing bikes between stations to prevent some running empty while others are full. Without real-time visibility, operations teams work from stale reports that are too slow to act on before riders are impacted.
 
-This project is my attempt to do that using Microsoft Fabric's Real-Time Intelligence stack. It streams live BikePoint telemetry through an EventStream, stores and transforms it in an Eventhouse using a Medallion Architecture built entirely in KQL, fires automated alerts via Activator when a neighbourhood drops below 30% availability, and surfaces everything on a live dashboard.
+This pipeline continuously answers three operational questions:
 
----
+- Which neighbourhoods are critically low on bike availability right now?
+- How is availability trending over the past few hours by zone?
+- Which specific stations need urgent attention, and where are they on a map?
 
-## How it all fits together
+## Architecture
 
 ```
-TfL BikePoint feed
-      │
-      ▼
- EventStream  ──(ManageFields)──►  Eventhouse (LondonBikes_EH)
-                                         │
-                            ┌────────────┼────────────┐
-                            ▼            ▼             ▼
-                         Bronze       Silver          Gold
-                       (raw data)  (Update Policy) (Materialized Views)
-                                         │
-                            ┌────────────┼────────────┐
-                            ▼                          ▼
-                        Activator             Real-Time Dashboard
-                    (neighbourhood alerts)    (KPIs, charts, map)
+TfL BikePoint Feed
+        |
+        v
++----------------------------------+
+|        Fabric EventStream         |
+|  Source : Bicycles (Sample Data)  |
+|  Operator: ManageFields           |
+|  Destination: Eventhouse          |
++----------------+-----------------+
+                 |  Streaming ingest
+                 v
++----------------------------------------------------+
+|            Eventhouse - LondonBikes_EH             |
+|                                                    |
+|   +--------------+   Update Policy                 |
+|   |    BRONZE    | ----------------->              |
+|   | Bikes_Bronze |  TransformBronzeToSilver()      |
+|   +--------------+                                 |
+|                         |                          |
+|                         v                          |
+|                 +---------------+                  |
+|                 |    SILVER     |                  |
+|                 | Bikes_Silver  |                  |
+|                 +-------+-------+                  |
+|                         |  Materialized Views       |
+|          +--------------+--------------+           |
+|          v              v              v           |
+|  +--------------+ +--------------+ +----------+   |
+|  | mv_Station   | | mv_Neighbour | | mv_Hourly|   |
+|  | Summary      | | hoodRollup   | | Trend    |   |
+|  +--------------+ +--------------+ +----------+   |
+|                        GOLD                        |
++----------------------------------------------------+
+                         |
+          +--------------+--------------+
+          v                             v
++----------------------+    +-------------------------+
+|   Fabric Activator   |    |   Real-Time Dashboard   |
+| NeighbourhoodAvail-  |    | LondonBikes_LiveDashboard|
+| ability alert        |    | KPIs, Charts, Map        |
++----------------------+    +-------------------------+
 ```
 
-No Spark, no Dataflow, no external compute. Everything lives inside the Eventhouse and runs as native KQL — which keeps latency low and the architecture simple.
+## EventStream
 
----
+**Pipeline:** `LondonBikes_Stream`
 
-## The EventStream
+The EventStream ingests the TfL Bicycles sample feed, applies a **ManageFields** operator to select and standardise the required columns, and routes the cleaned stream directly into the Eventhouse. Business logic is kept out of the EventStream layer entirely - transformation happens in KQL.
 
-The pipeline starts with an EventStream called `LondonBikes_Stream`. The source is the Fabric Bicycles sample dataset, which simulates a live TfL BikePoint feed. In a real production setup you'd swap this for a direct connection to the TfL Unified API, but the schema and refresh pattern are the same.
+**Fields selected by ManageFields:** `BikepointID`, `Street`, `Neighbourhood`, `Latitude`, `Longitude`, `No_Bikes`, `No_Empty_Docks`
 
 ![EventStream overview](Screenshots/EventStream/00_LondonBikes_Stream.png)
 
-The stream topology is three nodes: a **Bicycles** source, a **ManageFields** operator in the middle, and an **Eventhouse** destination. It's deliberately kept simple — EventStream isn't the place for business logic, that happens in the KQL layer.
-
 ![Source configuration](Screenshots/EventStream/01_Source_Bicycles.png)
 
-![Sample data source detail](Screenshots/EventStream/01_Source_SampleData.png)
+![Sample data source](Screenshots/EventStream/01_Source_SampleData.png)
 
 ![Stream topology](Screenshots/EventStream/02_LondonBikes_Stream.png)
 
-The ManageFields operator just selects and standardises the columns I care about: `BikepointID`, `Street`, `Neighbourhood`, `Latitude`, `Longitude`, `No_Bikes`, `No_Empty_Docks`. Everything else from the source gets dropped here before it even hits storage.
-
 ![ManageFields operator](Screenshots/EventStream/03_ManageFields.png)
-
-From there, the data routes straight into the Eventhouse destination — the stream is active and ingesting continuously.
 
 ![Eventhouse destination](Screenshots/EventStream/04_Eventhouse.png)
 
----
+## Eventhouse - Medallion Architecture
 
-## Eventhouse — Medallion Architecture in KQL
+**Database:** `LondonBikes_EH`
 
-The Eventhouse database is `LondonBikes_EH`, and I've organised it into a proper Bronze / Silver / Gold structure. What I like about doing this in KQL is that the whole transformation chain is declarative — you define the Update Policy and the Materialized Views once, and Eventhouse handles the rest automatically for every new row that arrives.
+The entire transformation chain (Bronze ingestion, Silver enrichment, Gold aggregation) runs natively in KQL using Update Policies and Materialized Views. No external compute is required.
 
-### Bronze — raw ingestion
+### Bronze - Raw Ingestion
 
-`Bikes_Bronze` is the landing table. Nothing fancy here — data arrives from the EventStream exactly as-is, with timestamps and all original fields intact. The schema is flat: `BikepointID`, `Street`, `Neighbourhood`, `Latitude`, `Longitude`, `No_Bikes`, `No_Empty_Docks`, `Timestamp`.
+**Table:** `Bikes_Bronze`
+
+Raw landing table. Data arrives from EventStream unchanged, preserving the original event timestamp and all source fields. This layer serves as the replayable source of truth.
+
+| Column          | Type     | Description                                          |
+|-----------------|----------|------------------------------------------------------|
+| `BikepointID`   | string   | Station identifier (e.g. `BikePoints_460`)           |
+| `Street`        | string   | Street address                                       |
+| `Neighbourhood` | string   | Area grouping (e.g. Fitzrovia, Chelsea, Battersea)   |
+| `Latitude`      | real     | WGS84 latitude                                       |
+| `Longitude`     | real     | WGS84 longitude                                      |
+| `No_Bikes`      | int      | Available bikes at time of event                     |
+| `No_Empty_Docks`| int      | Empty docking spaces                                 |
+| `Timestamp`     | datetime | Event timestamp from source                          |
 
 ![Bronze table](Screenshots/EventHouse/Bikes_Bronze.png)
 
-I deliberately don't transform anything at this layer. If something goes wrong downstream I can always replay from Bronze.
+### Silver - Enriched and Classified
 
-### Silver — enriched and classified
+**Table:** `Bikes_Silver` populated via Update Policy on `Bikes_Bronze`
 
-`Bikes_Silver` is where the interesting work happens. It's populated automatically via an **Update Policy** that fires `TransformBronzeToSilver()` on every Bronze insert.
+Every row inserted into Bronze triggers the `TransformBronzeToSilver()` function, which writes an enriched version to Silver. Four computed columns are added:
 
-The function does three things:
+| Column            | Logic                                                                              |
+|-------------------|------------------------------------------------------------------------------------|
+| `TotalDocks`      | `No_Bikes + No_Empty_Docks`                                                        |
+| `AvailabilityPct` | `round(toreal(No_Bikes) / TotalDocks * 100, 1)` guarded against divide-by-zero    |
+| `StationStatus`   | Five-category classification (see below)                                           |
+| `IngestionTime`   | `ingestion_time()` used for latency monitoring                                     |
 
-1. **Calculates TotalDocks and AvailabilityPct** — simple arithmetic (`No_Bikes + No_Empty_Docks`) and a percentage rounded to one decimal place
-2. **Assigns a StationStatus** using a case statement with five categories: `Empty`, `Full`, `Low` (≤3 bikes), `NearlyFull` (≤3 empty docks), and `Normal`
-3. **Cleans nulls** — any station with a missing or null `Neighbourhood` gets labelled `'Unidentified'` rather than breaking downstream group-bys
+**StationStatus classification:**
+
+```kql
+StationStatus = case(
+    No_Bikes == 0,         'Empty',
+    No_Empty_Docks == 0,   'Full',
+    No_Bikes <= 3,         'Low',
+    No_Empty_Docks <= 3,   'NearlyFull',
+                           'Normal'
+)
+```
+
+Null or empty `Neighbourhood` values are replaced with `'Unidentified'` to prevent broken group-bys in downstream aggregations.
 
 ![TransformBronzeToSilver function](Screenshots/EventHouse/FunctionTransformBronzeToSilver.png)
 
-The Silver table also captures `IngestionTime` via `ingestion_time()`, which I use later to monitor pipeline latency.
-
 ![Silver table](Screenshots/EventHouse/Bikes_Silver.png)
 
-The data quality improvement is visible just by glancing at Silver vs Bronze — you can immediately see which stations are `Empty`, `NearlyFull`, etc., without writing any extra logic in the consuming query.
+### Gold - Materialized Views
 
-### Gold — Materialized Views
-
-Rather than scanning Silver on every dashboard refresh, I pre-aggregate it into three Materialized Views sitting in the `Gold` folder.
+Three Materialized Views continuously pre-aggregate Silver data. Both the dashboard and Activator query these views exclusively - no raw Silver scans at read time.
 
 ![Gold materialized views](Screenshots/EventHouse/Gold_mv.png)
 
-**`mv_StationSummary`** — gives you the latest reading per station using `arg_max(Timestamp, *)`. This is what the map visual queries, and it's also the source for the geospatial low-availability analysis.
+**`mv_StationSummary`** pulls the latest snapshot per station using `arg_max(Timestamp, *)` and is used by the geospatial map and per-station lookups.
 
 ![mv_StationSummary](Screenshots/EventHouse/mv_StationSummary.png)
 
-**`mv_NeighbourhoodRollup`** — aggregates everything by neighbourhood: total stations, total bikes, empty/low/full counts, and average availability percentage. This is the most-queried view in the whole project — the dashboard, the Activator, and most of the analytics queries all use it.
+**`mv_NeighbourhoodRollup`** aggregates at neighbourhood level: total stations, total bikes, empty/low/full counts, and average availability percentage. This is the view the Activator alert and the Availability by Neighbourhood chart both query.
 
 ![mv_NeighbourhoodRollup](Screenshots/EventHouse/mv_NeighbourhoodRollup.png)
 
-**`mv_HourlyTrend`** — buckets Silver into 1-hour bins by neighbourhood, tracking average bike count, average availability, and empty station count over time. Powers the trend chart on the dashboard.
+**`mv_HourlyTrend`** bins Silver data into 1-hour buckets by neighbourhood, tracking average bike count, average availability, and empty station count over time. Used by the Hourly Availability Trend chart.
 
 ![mv_HourlyTrend](Screenshots/EventHouse/mv_HourlyTrend.png)
 
----
+## Activator - Automated Alerts
 
-## Activator — automated neighbourhood alerts
+**Object:** `LondonBikes_EH event` / **Rule:** `NeighbourhoodAvailability`
 
-The Activator object `LondonBikes_EH event` has one rule: `NeighbourhoodAvailability`. Every **5 minutes** it runs this query against the Eventhouse:
+The Activator polls `mv_NeighbourhoodRollup` (Gold layer) every **5 minutes**. When any neighbourhood's average bike availability drops below **30%**, an alert fires with the neighbourhood name, current availability percentage, and number of empty stations.
 
 ```kql
 mv_NeighbourhoodRollup
@@ -125,49 +173,57 @@ mv_NeighbourhoodRollup
 | project Neighbourhood, AvgAvailabilityPct, EmptyStations
 ```
 
-If any neighbourhood has dropped below 30% average availability, an alert fires with the neighbourhood name, its current availability percentage, and how many of its stations are completely empty. That's the information a rebalancing team actually needs — not a generic "something is wrong" ping, but exactly where to send the van and how bad it is.
+This gives the rebalancing team precise, actionable information - not just that something is wrong, but exactly where to send a van and how critical the situation is.
 
 ![Activator rule](Screenshots/Activator/Activator.png)
 
-The 30% threshold is configurable. I picked it because at that point there's still time to react — below 15% things tend to cascade quickly as remaining stations empty out faster from displaced demand.
-
----
-
 ## Real-Time Dashboard
 
-The `LondonBikes_LiveDashboard` auto-refreshes and connects directly to the Eventhouse. At a glance it shows the full network health.
+**Dashboard:** `LondonBikes_LiveDashboard` / **Source:** `LondonBikes_EH` (Gold layer) / **Auto-refresh:** Enabled
+
+All dashboard visuals query the Gold Materialized Views directly.
+
+| Visual                        | Source View               | Description                                            |
+|-------------------------------|---------------------------|--------------------------------------------------------|
+| KPI - Available Stations      | `mv_NeighbourhoodRollup`  | Count of stations in Normal / NearlyFull status        |
+| KPI - Empty Stations          | `mv_NeighbourhoodRollup`  | Count of stations with zero bikes                      |
+| KPI - Total Bikes             | `mv_NeighbourhoodRollup`  | Sum of available bikes across the network              |
+| KPI - Low Stations            | `mv_NeighbourhoodRollup`  | Count of stations with 3 or fewer bikes                |
+| Availability by Neighbourhood | `mv_NeighbourhoodRollup`  | Bar chart ranked by `AvgAvailabilityPct`               |
+| Station Status Breakdown      | `mv_NeighbourhoodRollup`  | Pie chart of status distribution across the network    |
+| Hourly Availability Trend     | `mv_HourlyTrend`          | Line chart of average availability over time           |
+| Critical Stations Map         | `mv_StationSummary`       | Geospatial map using `Latitude` / `Longitude`          |
 
 ![Live dashboard](Screenshots/Live_Dashboard/LondonBikes_LiveDashboard.png)
 
-The four KPI tiles at the top — Available Stations, Empty Stations, Total Bikes, Low Stations — give the operational summary in seconds. Below that:
+## KQL Analytics Queryset
 
-- The **Availability by Neighbourhood** bar chart immediately shows which zones are under-served, sorted so the worst are visible first
-- The **Station Status Breakdown** pie chart shows the proportion of the network in each state (Empty, Low, NearlyFull, Normal, Full)
-- The **Hourly Availability Trend** line chart reveals recurring patterns — useful for planning proactive rebalancing before demand hits
-- The **Critical Stations Map** plots low-availability stations geographically across London using the lat/long coordinates from `mv_StationSummary`
+**Queryset:** `LondonBikes_Analytics`
 
----
+A set of analytical and operational queries for deeper investigation beyond the dashboard.
 
-## KQL Analytics queryset
-
-Beyond the dashboard, the `LondonBikes_Analytics` queryset has a set of queries I wrote for deeper investigation. A few highlights:
-
-- **Station volatility** (Q8) — finds stations that flip between statuses most often in a 6-hour window, surfacing locations that might need structural fixes rather than just rebalancing
-- **Ingestion latency check** (Q9) — compares `IngestionTime` to `Timestamp` to confirm the pipeline is staying fresh and flag any unexpected lag
-- **Geospatial low-availability** (Q10) — queries `mv_StationSummary` for all stations below 20% availability and returns their coordinates, ready to export to a mapping tool
+| Query                          | Description                                                                                     |
+|--------------------------------|-------------------------------------------------------------------------------------------------|
+| Q8 - Station volatility        | Stations with the most status changes in a 6-hour window, surfacing locations that flip frequently between Empty and Normal |
+| Q9 - Ingestion latency check   | Measures `datetime_diff` between `IngestionTime` and `Timestamp` to verify pipeline freshness   |
+| Q10 - Geospatial low-availability | Stations below 20% availability with coordinates, ordered by `AvailabilityPct` ascending     |
 
 ![KQL Analytics queryset](Screenshots/Testing/LondonBikes_Analytics.png)
 
----
-
-## Repo structure
+## Repository Structure
 
 ```
 LondonBikes-RTI/
 ├── README.md
-├── kql/                  ← KQL scripts (functions, MV definitions, analytics queries)
-├── architecture/         ← Architecture diagrams
-├── docs/                 ← Design notes and decisions
+├── kql/
+│   ├── 01_bronze_table.kql            - Bikes_Bronze table definition
+│   ├── 02_silver_table.kql            - Bikes_Silver table definition
+│   ├── 03_transformation_function.kql - TransformBronzeToSilver() function
+│   ├── 04_update_policy.kql           - Update Policy (Bronze to Silver)
+│   ├── 05_gold_materialized_views.kql - mv_StationSummary, mv_NeighbourhoodRollup, mv_HourlyTrend
+│   └── 06_analytics_queries.kql       - Operational and analytical queries (Q1-Q10)
+├── architecture/                      - Architecture diagrams
+├── docs/                              - Design notes and supporting documentation
 └── Screenshots/
     ├── EventStream/
     ├── EventHouse/
@@ -176,25 +232,14 @@ LondonBikes-RTI/
     └── Testing/
 ```
 
----
+## Tech Stack
 
-## Things I'd do differently / next steps
-
-- Swap the sample data source for a live TfL API connection with proper OAuth
-- Add a second Activator rule for `Full` stations (currently only alerting on low availability, but full stations cause the same rider frustration)
-- Export the KQL scripts into the `kql/` folder with proper naming so the repo is fully reproducible
-- Add an architecture diagram to `architecture/` — the ASCII version in this README is fine for a quick read but a proper Visio or draw.io diagram would be cleaner
-- Investigate whether the `mv_HourlyTrend` could feed a predictive model for anticipating demand spikes by neighbourhood and time of day
-
----
-
-## Tech used
-
-| Thing | What for |
-|---|---|
-| Microsoft Fabric EventStream | Continuous ingestion from the BikePoint feed |
-| Fabric Eventhouse / KQL Database | Storage, transformation, aggregation — the whole data layer |
-| KQL (Kusto Query Language) | Update Policies, Materialized Views, analytics |
-| Fabric Activator | Automated alerting on neighbourhood availability |
-| Fabric Real-Time Dashboard | Live operational view |
-| TfL Bicycles sample dataset | Simulated BikePoint telemetry |
+| Component                        | Purpose                                                   |
+|----------------------------------|-----------------------------------------------------------|
+| Microsoft Fabric EventStream     | Continuous real-time data ingestion                       |
+| Fabric Eventhouse (KQL Database) | Streaming storage, transformation, and aggregation        |
+| KQL - Update Policy              | Automated Bronze to Silver transformation on every insert |
+| KQL - Materialized Views         | Continuously pre-aggregated Gold layer                    |
+| Fabric Activator                 | Rule-based alerting from Gold layer data                  |
+| Fabric Real-Time Dashboard       | Live operational visualisation from Gold layer            |
+| TfL Bicycles sample dataset      | Simulated TfL BikePoint station telemetry                 |
