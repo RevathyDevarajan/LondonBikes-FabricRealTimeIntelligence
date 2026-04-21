@@ -61,8 +61,8 @@ TfL BikePoint Feed
           +--------------+--------------+
           v                             v
 +----------------------+    +-------------------------+
-|   Fabric Activator   |    |   Real-Time Dashboard   |
-| NeighbourhoodAvail-  |    | LondonBikes_LiveDashboard|
+|   Fabric Activator   |    |   Real-Time    |
+| NeighbourhoodAvail-  |    | LondonBikes_Live|
 | ability alert        |    | KPIs, Charts, Map        |
 +----------------------+    +-------------------------+
 ```
@@ -145,7 +145,7 @@ Null or empty `Neighbourhood` values are replaced with `'Unidentified'` to preve
 
 ### Gold - Materialized Views
 
-Three Materialized Views continuously pre-aggregate Silver data. Both the dashboard and Activator query these views exclusively - no raw Silver scans at read time.
+Three Materialized Views continuously pre-aggregate Silver data. Both the  and Activator query these views exclusively - no raw Silver scans at read time.
 
 ![Gold materialized views](Screenshots/EventHouse/Gold_mv.png)
 
@@ -194,7 +194,7 @@ All dashboard visuals query the Gold Materialized Views directly.
 | Hourly Availability Trend     | `mv_HourlyTrend`          | Line chart of average availability over time           |
 | Critical Stations Map         | `mv_StationSummary`       | Geospatial map using `Latitude` / `Longitude`          |
 
-![Live dashboard](Screenshots/Live_Dashboard/LondonBikes_LiveDashboard.png)
+![Live dashboard](Screenshots/RealTimeDashboard/LondonBikes_LiveDashboard.png)
 
 ## KQL Analytics Queryset
 
