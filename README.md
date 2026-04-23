@@ -202,12 +202,6 @@ All dashboard visuals query the Gold Materialized Views directly.
 
 A set of analytical and operational queries for deeper investigation beyond the dashboard.
 
-| Query                          | Description                                                                                     |
-|--------------------------------|-------------------------------------------------------------------------------------------------|
-| Q8 - Station volatility        | Stations with the most status changes in a 6-hour window, surfacing locations that flip frequently between Empty and Normal |
-| Q9 - Ingestion latency check   | Measures `datetime_diff` between `IngestionTime` and `Timestamp` to verify pipeline freshness   |
-| Q10 - Geospatial low-availability | Stations below 20% availability with coordinates, ordered by `AvailabilityPct` ascending     |
-
 ![KQL Analytics queryset](Screenshots/Testing/LondonBikes_Analytics.png)
 
 ## Repository Structure
